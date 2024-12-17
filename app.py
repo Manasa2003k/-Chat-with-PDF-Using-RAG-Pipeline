@@ -10,88 +10,86 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 
+
 load_dotenv()
-embeddings = SpacyEmbeddings(model_name="en_core_web_sm")
-def pdf_read(pdf_doc):
-    text = ""
-    for pdf in pdf_doc:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-    return text
 
 
+embedding_model = SpacyEmbeddings(model_name="en_core_web_sm")
 
-def get_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_text(text)
-    return chunks
+def extract_text_from_pdfs(pdf_files):
+ 
+ extracted_text = ""
+ for pdf in pdf_files:
+ reader = PdfReader(pdf)
+ for page in reader.pages:
+ extracted_text += page.extract_text()
+ return extracted_text
 
+def split_text_into_chunks(text):
+ 
+ splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+ return splitter.split_text(text)
 
-def vector_store(text_chunks):
-    
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_db")
+def create_vector_database(chunks):
+ 
+ vector_db = FAISS.from_texts(chunks, embedding=embedding_model)
+ vector_db.save_local("vector_database")
 
+def generate_conversation_chain(retrieval_tool, user_query):
+ 
+ 
+ language_model = ChatAnthropic(
+ model="claude-3-sonnet-20240229",
+ temperature=0,
+ api_key=os.getenv("ANTHROPIC_API_KEY"),
+ verbose=True
+ )
 
-def get_conversational_chain(tools,ques):
-    #os.environ["ANTHROPIC_API_KEY"]=os.getenv["ANTHROPIC_API_KEY"]
-    llm = ChatAnthropic(model="claude-3-sonnet-20240229", temperature=0, api_key=os.getenv("ANTHROPIC_API_KEY"),verbose=True)
+ 
+ chat_prompt = ChatPromptTemplate.from_messages([
+ ("system", """You are an intelligent assistant. Respond with detailed answers using the provided context. 
+ If you cannot find the answer within the given information, reply with: 'Answer not located in the provided context.'. Avoid making incorrect assumptions."""),
+ ("placeholder", "{chat_history}"),
+ ("human", "{input}"),
+ ("placeholder", "{agent_scratchpad}")
+ ])
 
-    prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """You are a helpful assistant. Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
-    provided context just say, "answer is not available in the context", don't provide the wrong answer""",
-        ),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ]
-)
-    tool=[tools]
-    agent = create_tool_calling_agent(llm, tool, prompt)
+ 
+ agent = create_tool_calling_agent(language_model, [retrieval_tool], chat_prompt)
+ executor = AgentExecutor(agent=agent, tools=[retrieval_tool], verbose=True)
 
-    agent_executor = AgentExecutor(agent=agent, tools=tool, verbose=True)
-    response=agent_executor.invoke({"input": ques})
-    print(response)
-    st.write("Reply: ", response['output'])
+ 
+ result = executor.invoke({"input": user_query})
+ st.write("Response:", result['output'])
 
-
-
-def user_input(user_question):
-    
-    
-    
-    new_db = FAISS.load_local("faiss_db", embeddings,allow_dangerous_deserialization=True)
-    
-    retriever=new_db.as_retriever()
-    retrieval_chain= create_retriever_tool(retriever,"pdf_extractor","This tool is to give answer to queries from the pdf")
-    get_conversational_chain(retrieval_chain,user_question)
-
-
-
-
+def handle_user_query(query):
+ vector_db = FAISS.load_local("vector_database", embedding_model, allow_dangerous_deserialization=True)
+ retriever = vector_db.as_retriever()
+ retrieval_tool = create_retriever_tool(retriever, "document_retrieval", "Tool for answering PDF-based queries.")
+ generate_conversation_chain(retrieval_tool, query)
 
 def main():
-    st.set_page_config("Chat PDF")
-    st.header("RAG based Chat with PDF")
+ 
+ st.set_page_config(page_title="PDF Chat Assistant")
+ st.header("PDF-Based Question Answering System")
 
-    user_question = st.text_input("Ask a Question from the PDF Files")
+ query = st.text_input("Enter your question related to the uploaded PDFs:")
+ if query:
+ handle_user_query(query)
 
-    if user_question:
-        user_input(user_question)
-
-    with st.sidebar:
-        st.title("Menu:")
-        pdf_doc = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
-        if st.button("Submit & Process"):
-            with st.spinner("Processing..."):
-                raw_text = pdf_read(pdf_doc)
-                text_chunks = get_chunks(raw_text)
-                vector_store(text_chunks)
-                st.success("Done")
+ 
+ with st.sidebar:
+ st.title("Options:")
+ updfs = st.file_uploader("Here you Add PDF documents ", accept_multiple_files=True)
+ if st.button("Process Files"):
+ with st.spinner("Extracting and processing data..."):
+ if updfs:
+ raw_text = extract_text_from_pdfs(updfs)
+ text_chunks = split_text_into_chunks(raw_text)
+ create_vector_database(text_chunks)
+ st.success("PDFs processed successfully!")
+ else:
+ st.warning("Please make sure to upload a PDF file at a minimum.")
 
 if __name__ == "__main__":
-    main()
+ main()
